@@ -4,7 +4,7 @@ const session = require("express-session");
 const SQLiteStore = require("connect-sqlite3")(session);
 const path = require("path");
 const bcrypt = require("bcrypt");
-const { loginCheck, newAccountCheck } = require("./auth");
+const { loginCheck, newAccountCheck, addKnownDevice } = require("./auth");
 const dbPromise = require("./db");
 
 let db;
@@ -62,9 +62,9 @@ router.get("/otp", (req, res) => {
 });
 
 router.post("/api/login", async function (req, res) {
-  const { username, password } = req.body;
+  const { username, password, sealedResult } = req.body;
 
-  const result = await loginCheck({ username, password });
+  const result = await loginCheck({ username, password, sealedResult });
   const status = result.status;
 
   if (!result.success) {
@@ -75,6 +75,7 @@ router.post("/api/login", async function (req, res) {
 
   req.session.username = username;
   req.session.status = status;
+  req.session.visitorId = result.visitorId;
 
   if (status == "mfa_required") {
     req.session.otp = "123456"; // Generate and send a real OTP here
@@ -94,6 +95,12 @@ router.post("/api/otp", async function (req, res) {
       .send({ success: false, message: "Failed to verify passcode." });
   }
 
+  // Add the visitor's device to the database
+  await addKnownDevice({
+    username: req.session.username,
+    visitorId: req.session.visitorId,
+  });
+
   // Update session and redirect to the profile page
   req.session.status = "verified";
   delete req.session.otp;
@@ -108,15 +115,21 @@ router.get("/logout", (req, res) => {
 });
 
 router.post("/api/create-user", async function (req, res) {
-  const { username, password } = req.body;
+  const { username, password, sealedResult } = req.body;
   const password_hash = await bcrypt.hash(password, 10);
 
-  const result = await newAccountCheck(username, password_hash);
+  const result = await newAccountCheck(username, password_hash, sealedResult);
   if (!result.success) {
     return res
       .status(401)
       .send({ success: false, message: "Failed to create new account." });
   }
+
+  // Add the visitor's device to the database
+  await addKnownDevice({
+    username,
+    visitorId: result.visitorId,
+  });
 
   return res.json({
     success: true,
